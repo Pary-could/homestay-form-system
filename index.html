@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>民宿信息收集+评分填报系统</title>
+    <!-- ========== 外部依赖 ========== -->
+    <!-- ECharts 5.x CDN - 可视化图表库 -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <!-- SheetJS (xlsx) CDN - Excel读写导出库 -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- 主样式表 -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- ============================================================ -->
+    <!-- 顶部导航栏 -->
+    <!-- ============================================================ -->
+    <header class="top-bar">
+        <div class="top-bar-inner">
+            <h1 class="app-title">🏡 民宿信息收集 + 评分填报系统</h1>
+            <div class="top-actions">
+                <button class="btn btn-outline" id="btnReset" title="清空所有数据重新开始">
+                    🔄 重置数据
+                </button>
+                <button class="btn btn-primary" id="btnExport" title="一键导出完整台账Excel">
+                    📥 导出Excel台账
+                </button>
+                <span class="data-count" id="dataCount">已录入：0 家民宿</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ============================================================ -->
+    <!-- 主体分屏布局：左侧表单 + 右侧预览/图表 -->
+    <!-- ============================================================ -->
+    <main class="main-container">
+        <!-- ==================== 左侧：填报表单区 ==================== -->
+        <aside class="left-panel" id="leftPanel">
+            <!-- 面板切换标签 -->
+            <div class="panel-tabs">
+                <button class="tab-btn active" data-tab="tab-basic">📋 基础信息</button>
+                <button class="tab-btn" data-tab="tab-scoring">⭐ 质量评分</button>
+                <button class="tab-btn" data-tab="tab-list">📊 民宿列表</button>
+            </div>
+
+            <div class="panel-content" id="panelContent">
+                <!-- ========== 标签1：民宿基础信息填报区 ========== -->
+                <div class="tab-panel active" id="tab-basic">
+                    <form id="formBasic" autocomplete="off">
+                        <h3 class="section-title">民宿基础信息</h3>
+                        <p class="section-desc">请完整填写以下信息，带 <span class="required-mark">*</span> 为必填项</p>
+
+                        <!-- 民宿名称（必填，唯一） -->
+                        <div class="form-group">
+                            <label for="name">
+                                民宿名称 <span class="required-mark">*</span>
+                                <span class="label-tip">（不可重复）</span>
+                            </label>
+                            <input type="text" id="name" name="name"
+                                   placeholder="请输入民宿名称，如：云溪山居"
+                                   maxlength="50" required autocomplete="off">
+                            <span class="error-msg" id="err-name"></span>
+                        </div>
+
+                        <!-- 地址（必填） -->
+                        <div class="form-group">
+                            <label for="address">
+                                地址 <span class="required-mark">*</span>
+                                <span class="label-tip">（精确到门牌号/村民小组）</span>
+                            </label>
+                            <input type="text" id="address" name="address"
+                                   placeholder="如：xx镇xx村xx组xx号"
+                                   maxlength="100" required>
+                            <span class="error-msg" id="err-address"></span>
+                        </div>
+
+                        <!-- 业主（必填） -->
+                        <div class="form-group">
+                            <label for="owner">
+                                业主（经营者） <span class="required-mark">*</span>
+                            </label>
+                            <input type="text" id="owner" name="owner"
+                                   placeholder="请输入经营者姓名"
+                                   maxlength="20" required>
+                            <span class="error-msg" id="err-owner"></span>
+                        </div>
+
+                        <!-- 联系方式（必填，手机号校验） -->
+                        <div class="form-group">
+                            <label for="phone">
+                                联系方式 <span class="required-mark">*</span>
+                                <span class="label-tip">（手机号格式）</span>
+                            </label>
+                            <input type="tel" id="phone" name="phone"
+                                   placeholder="请输入11位手机号"
+                                   maxlength="11" required>
+                            <span class="error-msg" id="err-phone"></span>
+                        </div>
+
+                        <!-- 房间数（必填，正整数） -->
+                        <div class="form-group">
+                            <label for="rooms">
+                                房间数 <span class="required-mark">*</span>
+                                <span class="label-tip">（单位：间）</span>
+                            </label>
+                            <input type="number" id="rooms" name="rooms"
+                                   placeholder="请输入整数"
+                                   min="1" max="9999" step="1" required>
+                            <span class="error-msg" id="err-rooms"></span>
+                        </div>
+
+                        <!-- 开业时间（必填，下拉选项） -->
+                        <div class="form-group">
+                            <label for="openingPeriod">
+                                开业时间 <span class="required-mark">*</span>
+                            </label>
+                            <select id="openingPeriod" name="openingPeriod" required>
+                                <option value="">-- 请选择 --</option>
+                                <option value="1年以内">1年以内</option>
+                                <option value="1-3年">1-3年</option>
+                                <option value="3-5年">3-5年</option>
+                                <option value="5年以上">5年以上</option>
+                            </select>
+                            <span class="error-msg" id="err-openingPeriod"></span>
+                        </div>
+
+                        <!-- 特色（选填） -->
+                        <div class="form-group">
+                            <label for="feature">
+                                特色
+                                <span class="label-tip">（选填，民宿核心特色/主题）</span>
+                            </label>
+                            <input type="text" id="feature" name="feature"
+                                   placeholder="如：温泉私汤、禅意茶空间、亲子农事体验"
+                                   maxlength="100">
+                        </div>
+
+                        <!-- 人均价格（选填） -->
+                        <div class="form-group">
+                            <label for="avgPrice">
+                                人均价格
+                                <span class="label-tip">（选填，单位：元）</span>
+                            </label>
+                            <input type="number" id="avgPrice" name="avgPrice"
+                                   placeholder="请输入数字"
+                                   min="0" max="99999" step="0.01">
+                        </div>
+
+                        <!-- 停车场配套（必填，下拉选项） -->
+                        <div class="form-group">
+                            <label for="parking">
+                                停车场配套情况 <span class="required-mark">*</span>
+                            </label>
+                            <select id="parking" name="parking" required>
+                                <option value="">-- 请选择 --</option>
+                                <option value="自有免费停车场">自有免费停车场</option>
+                                <option value="自有收费停车场">自有收费停车场</option>
+                                <option value="路边免费停车位">路边免费停车位</option>
+                                <option value="无停车位">无停车位</option>
+                            </select>
+                            <span class="error-msg" id="err-parking"></span>
+                        </div>
+
+                        <!-- 餐饮配套（必填，下拉选项） -->
+                        <div class="form-group">
+                            <label for="dining">
+                                餐饮配套情况 <span class="required-mark">*</span>
+                            </label>
+                            <select id="dining" name="dining" required>
+                                <option value="">-- 请选择 --</option>
+                                <option value="配套自营餐厅">配套自营餐厅</option>
+                                <option value="合作农家菜">合作农家菜</option>
+                                <option value="无餐饮配套">无餐饮配套</option>
+                            </select>
+                            <span class="error-msg" id="err-dining"></span>
+                        </div>
+
+                        <!-- 备注（选填） -->
+                        <div class="form-group">
+                            <label for="remark">
+                                备注
+                                <span class="label-tip">（选填）</span>
+                            </label>
+                            <textarea id="remark" name="remark"
+                                      placeholder="补充说明信息..."
+                                      maxlength="500" rows="3"></textarea>
+                        </div>
+
+                        <!-- 进度提示 -->
+                        <div class="progress-hint" id="progressBasic">
+                            <span class="progress-text" id="progressBasicText">必填项完成：0/8</span>
+                            <div class="progress-bar-track">
+                                <div class="progress-bar-fill" id="progressBasicBar" style="width:0%"></div>
+                            </div>
+                        </div>
+
+                        <!-- 操作按钮 -->
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" id="btnClearBasic">
+                                🗑 清空表单
+                            </button>
+                            <button type="button" class="btn btn-success" id="btnSaveBasic">
+                                💾 保存信息
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- ========== 标签2：民宿服务质量评分填报区 ========== -->
+                <div class="tab-panel" id="tab-scoring">
+                    <form id="formScoring" autocomplete="off">
+                        <h3 class="section-title">民宿服务质量评分</h3>
+                        <p class="section-desc">
+                            请先在上方"基础信息"标签中保存民宿，再进入评分。
+                            总分100分，各维度分值上限已标注。
+                        </p>
+
+                        <!-- 评分关联的民宿选择 -->
+                        <div class="form-group highlight-group">
+                            <label for="scoreTarget">评分对象（已录入民宿） <span class="required-mark">*</span></label>
+                            <select id="scoreTarget" name="scoreTarget" required>
+                                <option value="">-- 请先选择民宿 --</option>
+                            </select>
+                            <span class="error-msg" id="err-scoreTarget"></span>
+                        </div>
+
+                        <!-- 必备项（不计入总分，仅供核查） -->
+                        <fieldset class="score-dimension dim-must">
+                            <legend>
+                                <span class="dim-badge badge-must">必备项</span>
+                                民宿合规经营必备条件（不计入总分，仅供自查核验）
+                            </legend>
+                            <div class="must-grid" id="mustItems"></div>
+                        </fieldset>
+
+                        <!-- 维度1：基础设施（20分） -->
+                        <fieldset class="score-dimension dim-infra">
+                            <legend>
+                                <span class="dim-badge badge-score">20分</span>
+                                维度一：基础设施
+                            </legend>
+                            <div class="score-grid" id="scoreInfra"></div>
+                            <div class="dim-subtotal">
+                                基础设施小计：<strong id="subtotalInfra">0</strong> / 20 分
+                                <span class="dim-error" id="errInfra"></span>
+                            </div>
+                        </fieldset>
+
+                        <!-- 维度2：服务质量（20分） -->
+                        <fieldset class="score-dimension dim-service">
+                            <legend>
+                                <span class="dim-badge badge-score">20分</span>
+                                维度二：服务质量
+                            </legend>
+                            <div class="score-grid" id="scoreService"></div>
+                            <div class="dim-subtotal">
+                                服务质量小计：<strong id="subtotalService">0</strong> / 20 分
+                                <span class="dim-error" id="errService"></span>
+                            </div>
+                        </fieldset>
+
+                        <!-- 维度3：环境卫生（15分） -->
+                        <fieldset class="score-dimension dim-hygiene">
+                            <legend>
+                                <span class="dim-badge badge-score">15分</span>
+                                维度三：环境卫生
+                            </legend>
+                            <div class="score-grid" id="scoreHygiene"></div>
+                            <div class="dim-subtotal">
+                                环境卫生小计：<strong id="subtotalHygiene">0</strong> / 15 分
+                                <span class="dim-error" id="errHygiene"></span>
+                            </div>
+                        </fieldset>
+
+                        <!-- 维度4：安全管理（20分） -->
+                        <fieldset class="score-dimension dim-safety">
+                            <legend>
+                                <span class="dim-badge badge-score">20分</span>
+                                维度四：安全管理
+                            </legend>
+                            <div class="score-grid" id="scoreSafety"></div>
+                            <div class="dim-subtotal">
+                                安全管理小计：<strong id="subtotalSafety">0</strong> / 20 分
+                                <span class="dim-error" id="errSafety"></span>
+                            </div>
+                        </fieldset>
+
+                        <!-- 维度5：文化特色（10分） -->
+                        <fieldset class="score-dimension dim-culture">
+                            <legend>
+                                <span class="dim-badge badge-score">10分</span>
+                                维度五：文化特色
+                            </legend>
+                            <div class="score-grid" id="scoreCulture"></div>
+                            <div class="dim-subtotal">
+                                文化特色小计：<strong id="subtotalCulture">0</strong> / 10 分
+                                <span class="dim-error" id="errCulture"></span>
+                            </div>
+                        </fieldset>
+
+                        <!-- 维度6：设施设备（15分） -->
+                        <fieldset class="score-dimension dim-facility">
+                            <legend>
+                                <span class="dim-badge badge-score">15分</span>
+                                维度六：设施设备
+                            </legend>
+                            <div class="score-grid" id="scoreFacility"></div>
+                            <div class="dim-subtotal">
+                                设施设备小计：<strong id="subtotalFacility">0</strong> / 15 分
+                                <span class="dim-error" id="errFacility"></span>
+                            </div>
+                        </fieldset>
+
+                        <!-- 总分与评级 -->
+                        <div class="total-score-box" id="totalScoreBox">
+                            <div class="total-score-main">
+                                <span class="total-label">🏆 总分</span>
+                                <span class="total-value" id="totalScore">0</span>
+                                <span class="total-unit">/ 100 分</span>
+                            </div>
+                            <div class="total-grade" id="totalGrade">--</div>
+                        </div>
+
+                        <!-- 操作按钮 -->
+                        <div class="form-actions">
+                            <button type="button" class="btn btn-secondary" id="btnClearScore">
+                                🗑 清空评分
+                            </button>
+                            <button type="button" class="btn btn-success" id="btnSaveScore">
+                                💾 保存评分
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- ========== 标签3：已录入民宿列表 ========== -->
+                <div class="tab-panel" id="tab-list">
+                    <h3 class="section-title">📊 已录入民宿列表</h3>
+                    <div class="list-toolbar">
+                        <input type="text" id="listSearch" placeholder="🔍 搜索民宿名称..." autocomplete="off">
+                        <span class="list-count" id="listCount">共 0 条记录</span>
+                    </div>
+                    <div class="list-table-wrap">
+                        <table class="data-table" id="dataTable">
+                            <thead>
+                                <tr>
+                                    <th>序号</th>
+                                    <th>民宿名称</th>
+                                    <th>地址</th>
+                                    <th>业主</th>
+                                    <th>评分</th>
+                                    <th>等级</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="dataTableBody">
+                                <tr class="empty-row">
+                                    <td colspan="7">暂无数据，请先添加民宿信息</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ==================== 右侧：实时预览 + 可视化图表 ==================== -->
+        <section class="right-panel" id="rightPanel">
+            <!-- 实时预览卡片 -->
+            <div class="preview-card" id="previewCard">
+                <h3 class="preview-title">👁 实时数据预览</h3>
+                <div class="preview-stats">
+                    <div class="stat-item">
+                        <span class="stat-num" id="statTotal">0</span>
+                        <span class="stat-label">民宿总数</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-num" id="statAvgScore">--</span>
+                        <span class="stat-label">平均评分</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-num" id="statExcellent">0</span>
+                        <span class="stat-label">优秀(≥90)</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-num" id="statFail">0</span>
+                        <span class="stat-label">待改进(&lt;70)</span>
+                    </div>
+                </div>
+                <!-- 最新录入预览 -->
+                <div class="latest-entry" id="latestEntry">
+                    <p class="muted-text">暂无录入数据，填写左侧表单开始...</p>
+                </div>
+            </div>
+
+            <!-- ECharts 可视化图表区 -->
+            <div class="charts-container">
+                <!-- 图1：各开业年限民宿数量柱状图 -->
+                <div class="chart-card">
+                    <h4 class="chart-title">📅 各开业年限民宿数量</h4>
+                    <div class="chart-wrap" id="chartOpeningPeriod"></div>
+                </div>
+                <!-- 图2：各评分等级民宿占比饼图 -->
+                <div class="chart-card chart-half">
+                    <h4 class="chart-title">🏅 评分等级占比</h4>
+                    <div class="chart-wrap" id="chartGradePie"></div>
+                </div>
+                <!-- 图3：停车场/餐饮配套条形图 -->
+                <div class="chart-card chart-half">
+                    <h4 class="chart-title">🅿️🍽️ 配套设施分布</h4>
+                    <div class="chart-wrap" id="chartFacilityBar"></div>
+                </div>
+                <!-- 图4：6维度平均得分雷达图 -->
+                <div class="chart-card">
+                    <h4 class="chart-title">🎯 6个评分维度平均得分对比</h4>
+                    <div class="chart-wrap" id="chartRadar"></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ============================================================ -->
+    <!-- Toast 消息提示 -->
+    <!-- ============================================================ -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- ============================================================ -->
+    <!-- 主脚本（所有业务逻辑） -->
+    <!-- ============================================================ -->
+    <script src="main.js"></script>
+</body>
+</html>
