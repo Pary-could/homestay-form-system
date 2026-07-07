@@ -1,3 +1,12 @@
+/*
+=============================
+★★★ Supabase 配置区 ★★★
+=============================
+*/
+const SUPABASE_URL = 'https://ofeiflviqyhidvgjookl.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_2B9ExLqgbOtGXxuNd2LSXg_B5DFlpFg';
+let supabaseClient = null;
+let isSupabaseReady = false;
 /* ============================================================
    民宿信息收集+评分填报系统 - 主逻辑脚本
    功能：
