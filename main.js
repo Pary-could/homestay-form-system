@@ -13,6 +13,16 @@ async function initSupabase() {
   supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   isSupabaseReady = true;
 }
+
+// 从云端拉取所有民宿数据
+async function loadCloudAllData() {
+  if (!supabaseClient) await initSupabase();
+  const { data: basicList } = await supabaseClient.from('homestay_basic').select('*');
+  const { data: scoreList } = await supabaseClient.from('homestay_score').select('*');
+  localStorage.setItem('homestay_basic_data', JSON.stringify(basicList));
+  localStorage.setItem('homestay_score_data', JSON.stringify(scoreList));
+  renderAllChart();
+}
 /* ============================================================
    民宿信息收集+评分填报系统 - 主逻辑脚本
    功能：
@@ -1835,4 +1845,8 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('   window.importHomestayData({})   - 批量导入数据');
     console.log('   window.syncToJinshanDoc(url,tk) - 同步到金山文档');
     console.log('   window.exportToJSON()           - 导出JSON');
+});
+// 页面打开自动同步云端数据
+window.addEventListener('DOMContentLoaded', async () => {
+  await loadCloudAllData();
 });
