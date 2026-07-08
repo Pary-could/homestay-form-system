@@ -7,10 +7,10 @@ const SUPABASE_URL = 'https://ofeiflviqyhidvgjookl.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_2B9ExLqgbOtGXxuNd2LSXg_B5DFlpFg';
 let supabaseClient = null;
 let isSupabaseReady = false;
-// 初始化Supabase客户端
+
 async function initSupabase() {
-  const { createClient } = supabase;
-  supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // 全局supabase对象来自html引入的CDN
+  supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   isSupabaseReady = true;
 }
 
