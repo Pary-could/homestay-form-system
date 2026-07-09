@@ -54,17 +54,23 @@ function basicFromSnakeCase(record) {
 /** 评分：前端驼峰 → 数据库下划线 */
 function scoreToSnakeCase(record) {
     return {
-        name: record.name, must_checks: record.mustChecks,
-        dimensions: record.dimensions, total_score: record.totalScore,
-        grade: record.grade, updated_at: record.updatedAt
+        homestay_name: record.name,     // 关联民宿名称
+        must_checks: record.mustChecks,  // 必备项勾选状态(JSONB)
+        dimensions: record.dimensions,   // 各维度评分明细(JSONB)
+        total_score: record.totalScore,  // 总分
+        grade: record.grade,             // 评级
+        filled_by: record.filledBy       // 填报人昵称
     };
 }
 /** 评分：数据库下划线 → 前端驼峰 */
 function scoreFromSnakeCase(record) {
     return {
-        name: record.name, mustChecks: record.must_checks,
-        dimensions: record.dimensions, totalScore: record.total_score,
-        grade: record.grade, updatedAt: record.updated_at
+        name: record.homestay_name,      // homestay_name → name
+        mustChecks: record.must_checks,
+        dimensions: record.dimensions,
+        totalScore: record.total_score,
+        grade: record.grade,
+        filledBy: record.filled_by       // filled_by → filledBy
     };
 }
 
@@ -133,7 +139,7 @@ async function cloudUpsertBasic(record) {
 }
 
 /**
- * [云端写入] 向homestay_score表upsert一条评分数据（name字段作为冲突键）
+ * [云端写入] 向homestay_score表insert一条评分（支持同一民宿多次提交）
  * @param {Object} record - 单条评分数据
  */
 async function cloudUpsertScore(record) {
@@ -142,9 +148,9 @@ async function cloudUpsertScore(record) {
         const dbRecord = scoreToSnakeCase(record);
         const { error } = await supabaseClient
             .from('homestay_score')
-            .upsert(dbRecord, { onConflict: 'name' });
+            .insert(dbRecord);
         if (error) throw error;
-        console.log('[云端写入] homestay_score upsert成功:', record.name);
+        console.log('[云端写入] homestay_score insert成功:', record.name);
         return true;
     } catch (e) {
         console.error('[云端写入] homestay_score失败:', e.message);
@@ -161,7 +167,7 @@ async function cloudDeleteRecord(name) {
     if (!isSupabaseReady) return;
     try {
         await supabaseClient.from('homestay_basic').delete().eq('name', name);
-        await supabaseClient.from('homestay_score').delete().eq('name', name);
+        await supabaseClient.from('homestay_score').delete().eq('homestay_name', name);
         console.log('[云端删除] 已删除:', name);
     } catch (e) {
         console.error('[云端删除] 失败:', e.message);
@@ -189,110 +195,100 @@ async function cloudDeleteRecord(name) {
 /** localStorage 键名 */
 const STORAGE_KEY_BASIC = 'homestay_basic_data';   // 基础信息
 const STORAGE_KEY_SCORE = 'homestay_score_data';    // 评分数据
+const STORAGE_KEY_FILLER_NAME = 'homestay_filler_name'; // 填报人昵称
 
 /**
  * 6个评分维度的配置
  * 每个维度包含：id, name, maxScore（该维度总分上限）, items（子项列表）
  * 总分 = 各维度 maxScore 之和 = 20+20+15+20+10+15 = 100
  */
+/** 6个评分维度（永汉镇温泉民宿标准，总分100分） */
 const SCORE_DIMENSIONS = [
     {
-        id: 'infra',            // 维度ID
-        name: '基础设施',        // 维度名称
-        maxScore: 20,           // 维度分值上限
+        id: 'infra', name: '基础设施', maxScore: 20,
         items: [
-            '交通便利性',
-            '建筑外观与周边协调',
-            '温泉水供应稳定性',
-            '客房基础配置',
-            '公共配套',
-            '无障碍与适老'
+            { name:'1.1 交通便利性',             maxScore:2, hint:'距主干道(S119/增龙路)≤3km有硬化路可达；有标识导引' },
+            { name:'1.2 建筑外观与周边协调',      maxScore:2, hint:'与南昆山/竹海/客家村落风貌不冲突，无违建' },
+            { name:'1.3 温泉水供应稳定性',        maxScore:5, hint:'24h热水或分时段公示清晰；私汤独立控温；⚠美团点评高频差评项，严卡扣分' },
+            { name:'1.4 客房基础配置',             maxScore:4, hint:'家具齐全、编号清晰、照明充足、遮光窗帘、气候适配冷暖' },
+            { name:'1.5 公共配套（庭院/公区/停车）',maxScore:4, hint:'停车≥客房数×0.5；有公区；别墅型有独立院落' },
+            { name:'1.6 无障碍与适老',             maxScore:3, hint:'有1层客房或电梯、无障碍通道' }
         ]
     },
     {
-        id: 'service',
-        name: '服务质量',
-        maxScore: 20,
+        id: 'service', name: '服务质量', maxScore: 25,
         items: [
-            '主人/管家参与接待',
-            '接待人员仪容礼仪',
-            '业务熟练度',
-            '服务响应',
-            '特色服务供给',
-            '投诉处理闭环'
+            { name:'2.1 主人/管家参与接待',        maxScore:4, hint:'主人或民宿主理人在场，能讲本地故事（南昆山、客家、温泉由来）' },
+            { name:'2.2 接待人员仪容与礼仪',        maxScore:3, hint:'着装整洁、普通话达标，方言/英语加分' },
+            { name:'2.3 业务熟练度',               maxScore:4, hint:'熟悉客房/餐饮/本地旅游资源（南昆山、218旅游公路、大观园）' },
+            { name:'2.4 服务响应',                 maxScore:4, hint:'诉求30分钟内响应，有微信管家群' },
+            { name:'2.5 特色服务供给',              maxScore:6, hint:'提供≥2项：私汤温度调节指导、本地农特产代购、山野徒步向导、节令活动' },
+            { name:'2.6 投诉处理与反馈',            maxScore:4, hint:'公示投诉电话，有记录、有闭环' }
         ]
     },
     {
-        id: 'hygiene',
-        name: '环境卫生',
-        maxScore: 15,
+        id: 'hygiene', name: '环境卫生', maxScore: 20,
         items: [
-            '布草每客必换',
-            '客房/公区整洁',
-            '私汤泡池卫生',
-            '卫生间防潮通风',
-            '防虫防蛇防鼠'
+            { name:'3.1 布草"每客必换"',          maxScore:5, hint:'床单被套枕套毛巾一客一换，公用品一客一消毒，有消毒柜可见' },
+            { name:'3.2 客房/公区整洁度',          maxScore:4, hint:'无积尘、无异味、无死角' },
+            { name:'3.3 私汤泡池卫生',             maxScore:5, hint:'换客必刷+换水/循环消毒，目视无沙无垢；⚠点评高频投诉项，严卡扣分' },
+            { name:'3.4 卫生间防潮通风',            maxScore:3, hint:'每日清理≥1次，无异味无积水' },
+            { name:'3.5 防虫防蛇防鼠',             maxScore:3, hint:'永汉靠山靠林，此项不能省' }
         ]
     },
     {
-        id: 'safety',
-        name: '安全管理',
-        maxScore: 20,
+        id: 'safety', name: '安全管理', maxScore: 15,
         items: [
-            '安全警示标识',
-            '消防合规',
-            '预案+演练',
-            '监控覆盖',
-            '食品安全（若供餐）',
-            '公众责任险'
+            { name:'4.1 安全警示标识',              maxScore:2, hint:'楼梯、泳池、泡池、陡坡处齐全，符合GB 2894' },
+            { name:'4.2 消防合规',                 maxScore:4, hint:'灭火器/烟感/疏散图齐全，农家乐防火导则达标' },
+            { name:'4.3 突发预案+演练',            maxScore:3, hint:'有预案、有记录（半年≥1次）' },
+            { name:'4.4 监控覆盖',                 maxScore:2, hint:'围墙、出入口、公区，画面留存≥30天' },
+            { name:'4.5 食品安全（若供餐）',        maxScore:2, hint:'生熟分柜、消毒设施有效' },
+            { name:'4.6 公众责任险',               maxScore:2, hint:'已购，保单在有效期内' }
         ]
     },
     {
-        id: 'culture',
-        name: '文化特色',
-        maxScore: 10,
+        id: 'culture', name: '文化特色', maxScore: 10,
         items: [
-            '建筑/装修地域性',
-            '本地体验项目',
-            '文创/特产带动',
-            '社区贡献'
+            { name:'5.1 建筑/装修地域性',           maxScore:3, hint:'客家元素、竹木材质、南昆山石/竹运用，拒绝"全国连锁风"' },
+            { name:'5.2 本地体验项目',              maxScore:3, hint:'温泉文化讲解、客家菜（龙门胡须鸡、山坑螺、年饼）、竹编/采茶等' },
+            { name:'5.3 文创/特产带动',             maxScore:2, hint:'销售本地农产（龙门大米、蜂蜜、笋干）或有自营文创' },
+            { name:'5.4 社区贡献',                 maxScore:2, hint:'聘用本地村民、参与村社公益、带动周边农家乐' }
         ]
     },
     {
-        id: 'facility',
-        name: '设施设备',
-        maxScore: 15,
+        id: 'facility', name: '设施设备', maxScore: 10,
         items: [
-            '客房家具品质',
-            '布草间独立整洁',
-            '消洗区独立',
-            '网络与智能',
-            '休闲设施',
-            '维保记录'
+            { name:'6.1 客房家具品质',              maxScore:2, hint:'乙级"品质较好"、甲级"品质优良"，按梯度打分' },
+            { name:'6.2 布草间独立+整洁',          maxScore:2, hint:'甲级必备项，永汉别墅型容易忽略' },
+            { name:'6.3 消洗区独立',               maxScore:1, hint:'清洗消毒分区' },
+            { name:'6.4 网络与智能',               maxScore:2, hint:'全域WiFi、智能门锁、可选全屋智能' },
+            { name:'6.5 休闲设施',                 maxScore:2, hint:'泳池/KTV/麻将/烧烤/茶室≥2项' },
+            { name:'6.6 维保记录',                 maxScore:1, hint:'设施定期检查有台账' }
         ]
     }
 ];
 
-/** 必备项清单（不计分，仅核查） */
+/** 必备项清单（18项，任意一项不达标→不定级） */
 const MUST_ITEMS = [
-    '证照齐全合法经营',
-    '正式开业≥1年',
-    '建筑规模合规',
-    '治安/环保/安全合规',
-    '温泉水源可溯源',
-    '安全警示标识',
-    '危化品管理',
-    '安全制度+预案+演练',
-    '食品合规（若供餐）',
-    '卫生达标',
-    '生活用水达标',
-    '装修用材合规',
-    '从业人员持证',
-    '垃圾分类+污水',
-    '服务明码标价',
-    '进入性良好',
-    '建筑外观协调',
-    '公众责任险'
+    { id:'A1',  label:'证照齐全合法经营',             detail:'营业执照、特行许可、消防、卫生、食品（若供餐）齐全' },
+    { id:'A2',  label:'正式开业≥1年',                 detail:'且在广东省旅游民宿管理系统备案' },
+    { id:'A3',  label:'建筑规模合规',                   detail:'客房楼≤4层，建筑面积≤800㎡' },
+    { id:'A4',  label:'治安/环保/安全合规',            detail:'近1年无相关违法记录，符合属地公安、生态环境、应急管理要求' },
+    { id:'A5',  label:'温泉水源可溯源',                 detail:'自有井取水许可或集中供温泉管网合同；水质检测报告在有效期内' },
+    { id:'A6',  label:'安全警示标识',                   detail:'楼梯/泳池/泡池/陡坡处齐全，符合GB 2894' },
+    { id:'A7',  label:'危化品管理',                     detail:'易燃物贮存符合GB 15603（温泉区硫磺/消毒药剂重点管控）' },
+    { id:'A8',  label:'安全制度+预案+演练',            detail:'有文本预案+半年≥1次演练记录' },
+    { id:'A9',  label:'食品合规（若供餐）',            detail:'符合GB 31654，生熟分柜、消毒设施有效' },
+    { id:'A10', label:'卫生达标',                       detail:'符合GB 37487、GB 37488' },
+    { id:'A11', label:'生活用水达标',                   detail:'符合GB 5749（含自备井/二次供水检测）' },
+    { id:'A12', label:'装修用材合规',                   detail:'符合GB 50016' },
+    { id:'A13', label:'从业人员持证',                   detail:'健康证、消防培训证等按岗配齐' },
+    { id:'A14', label:'垃圾分类+污水',                 detail:'截污纳管或自行处理达GB 8978' },
+    { id:'A15', label:'服务明码标价',                   detail:'收费项目文字图形公示，标价清晰' },
+    { id:'A16', label:'进入性良好',                     detail:'S119/增龙路可达，有硬化路、标识导引' },
+    { id:'A17', label:'建筑外观协调',                   detail:'与南昆山/竹海/客家村落风貌不冲突，无违建' },
+    { id:'A18', label:'公众责任险',                     detail:'保单在有效期内' }
 ];
 
 /**
@@ -300,12 +296,26 @@ const MUST_ITEMS = [
  * @param {number} score - 总分
  * @returns {{ grade: string, cssClass: string }} 等级名称和CSS类名
  */
-function getGradeInfo(score) {
-    if (score >= 90) return { grade: '优秀', cssClass: 'grade-excellent' };
-    if (score >= 80) return { grade: '良好', cssClass: 'grade-good' };
-    if (score >= 70) return { grade: '合格', cssClass: 'grade-pass' };
-    if (score >= 60) return { grade: '待改进', cssClass: 'grade-improve' };
-    return { grade: '不合格', cssClass: 'grade-fail' };
+/**
+ * 永汉镇温泉民宿等级判定
+ * @param {number} score - 总分
+ * @param {boolean} mustAllPassed - 必备项是否全部达标（默认true）
+ * @param {number} cultureScore - 文化特色维度得分（金宿门槛≥8）
+ * @param {number} item13Score - 1.3温泉水供应稳定性得分（金宿门槛>0）
+ * @param {number} item33Score - 3.3私汤泡池卫生得分（金宿门槛>0）
+ */
+function getGradeInfo(score, mustAllPassed = true, cultureScore = 0, item13Score = 0, item33Score = 0) {
+    // 一票否决：必备项不达标 或 总分<70 → 不定级
+    if (!mustAllPassed || score < 70) {
+        return { grade: '不定级', cssClass: 'grade-fail', isVeto: !mustAllPassed };
+    }
+    // 永汉金宿：≥90分 + 文化特色≥8 + 温泉供应>0 + 私汤卫生>0
+    if (score >= 90 && cultureScore >= 8 && item13Score > 0 && item33Score > 0) {
+        return { grade: '永汉金宿', cssClass: 'grade-gold' };
+    }
+    if (score >= 80) return { grade: '永汉银宿', cssClass: 'grade-silver' };
+    if (score >= 70) return { grade: '永汉铜宿', cssClass: 'grade-bronze' };
+    return { grade: '不定级', cssClass: 'grade-fail' };
 }
 
 /* ============================================================
@@ -329,6 +339,21 @@ function loadData(key, defaultValue = []) {
         console.warn('[数据加载失败]', key, e.message);
         return defaultValue;
     }
+}
+
+/**
+ * 获取/设置填报人昵称（localStorage 持久记忆）
+ * 首次使用时弹出输入框，后续自动记住
+ * @returns {string} 昵称
+ */
+function getFillerName() {
+    let name = localStorage.getItem(STORAGE_KEY_FILLER_NAME);
+    if (!name || name.trim() === '') {
+        name = prompt('请输入您的昵称（用于标识填报人）：', '');
+        if (!name || name.trim() === '') name = '匿名用户';
+        localStorage.setItem(STORAGE_KEY_FILLER_NAME, name.trim());
+    }
+    return name.trim();
 }
 
 /**
@@ -621,9 +646,10 @@ function renderScoringForm() {
     // 1. 渲染必备项
     const mustContainer = document.getElementById('mustItems');
     mustContainer.innerHTML = MUST_ITEMS.map((item, i) => `
-        <div class="must-item">
-            <input type="checkbox" id="must_${i}" data-must="${item}">
-            <label for="must_${i}">${item}</label>
+        <div class="must-item" title="${escapeHtml(item.detail || '')}">
+            <input type="checkbox" id="must_${i}" data-must="${item.id}">
+            <label for="must_${i}"><strong>${item.id}</strong> ${item.label}</label>
+            <span class="must-detail">${escapeHtml(item.detail || '')}</span>
         </div>
     `).join('');
 
@@ -632,25 +658,37 @@ function renderScoringForm() {
         const container = document.getElementById('score' + dim.id.charAt(0).toUpperCase() + dim.id.slice(1));
         if (!container) return;
 
-        container.innerHTML = dim.items.map((item, i) => `
-            <div class="score-item">
-                <label for="score_${dim.id}_${i}">${item}</label>
+        container.innerHTML = dim.items.map((item, i) => {
+            const hintAttr = item.hint ? ` title="${escapeHtml(item.hint)}"` : '';
+            return `
+            <div class="score-item"${hintAttr}>
+                <label for="score_${dim.id}_${i}">
+                    ${item.name}
+                    ${item.hint ? '<span class="score-hint">' + escapeHtml(item.hint) + '</span>' : ''}
+                </label>
                 <input type="number"
                        id="score_${dim.id}_${i}"
                        min="0"
-                       max="${dim.maxScore}"
+                       max="${item.maxScore}"
                        step="0.5"
                        value=""
                        placeholder="0"
                        data-dim="${dim.id}"
-                       data-index="${i}">
+                       data-index="${i}"
+                       data-max="${item.maxScore}">
+                <span class="score-max-tag">/${item.maxScore}</span>
             </div>
-        `).join('');
+        `}).join('');
     });
 
-    // 3. 绑定所有评分输入事件（实时计算）
+    // 3. 绑定所有评分输入事件（单项上限校验 + 实时计算）
     document.querySelectorAll('.score-grid input[type="number"]').forEach(input => {
+        // 输入前校验：防负数、自动截断、仅数字
+        input.addEventListener('input', function() { validateScoreInput(this); });
+        // 输入后联动：重算总分+等级
         input.addEventListener('input', recalculateAllScores);
+        // 失去焦点再次校验
+        input.addEventListener('blur', function() { validateScoreInput(this); });
     });
 
     // 4. 绑定必备项checkbox事件
@@ -660,6 +698,56 @@ function renderScoringForm() {
 }
 
 /**
+ * [需求1] 评分输入框单项上限实时校验
+ * - 禁止负数 → 自动置0
+ * - 超过该项满分上限 → 自动截断为满分 + toast轻提示
+ * - 仅允许数字输入
+ * @param {HTMLInputElement} input - 评分输入框DOM元素
+ */
+function validateScoreInput(input) {
+    let raw = input.value.trim();
+
+    // 空值放行（允许清空）
+    if (raw === '') return;
+
+    // 移除非法字符（非数字、非小数点）
+    let cleaned = raw.replace(/[^0-9.]/g, '');
+    // 只保留第一个小数点
+    const dotIdx = cleaned.indexOf('.');
+    if (dotIdx >= 0) {
+        cleaned = cleaned.slice(0, dotIdx + 1) + cleaned.slice(dotIdx + 1).replace(/./g, '');
+    }
+    if (cleaned !== raw) {
+        input.value = cleaned;
+        raw = cleaned;
+    }
+
+    let val = parseFloat(raw);
+    if (isNaN(val)) return;
+
+    // 负数 → 归零
+    if (val < 0) {
+        input.value = '0';
+        return;
+    }
+
+    // 获取该项满分上限（从 data-max 属性读取）
+    const maxScore = parseFloat(input.dataset.max);
+    if (!isNaN(maxScore) && val > maxScore) {
+        input.value = maxScore;
+        // 轻提示（防抖：200ms内同一输入框不重复弹）
+        const now = Date.now();
+        const lastToast = parseInt(input.dataset.lastToast || '0');
+        if (now - lastToast > 1500) {
+            input.dataset.lastToast = now;
+            showToast('⚠ 该项最高' + maxScore + '分，已自动修正', 'warning', 2000);
+        }
+    }
+}
+
+/**
+ * 获取某个维度的所有分数输入值
+/**
  * 获取某个维度的所有分数输入值
  * @param {string} dimId - 维度ID
  * @returns {number[]} 分数数组
@@ -667,8 +755,12 @@ function renderScoringForm() {
 function getDimensionScores(dimId) {
     const inputs = document.querySelectorAll(`input[data-dim="${dimId}"]`);
     return Array.from(inputs).map(inp => {
-        const val = parseFloat(inp.value);
-        return isNaN(val) || val < 0 ? 0 : val;
+        let val = parseFloat(inp.value);
+        if (isNaN(val) || val < 0) return 0;
+        // 双重保险：超过单项上限时截断
+        const max = parseFloat(inp.dataset.max);
+        if (!isNaN(max) && val > max) val = max;
+        return val;
     });
 }
 
@@ -681,34 +773,47 @@ function getScoringFormData() {
 
     // 收集必备项勾选状态
     const mustChecks = {};
+    let mustAllPassed = true;
     document.querySelectorAll('.must-grid input[type="checkbox"]').forEach(cb => {
         mustChecks[cb.dataset.must] = cb.checked;
+        if (!cb.checked) mustAllPassed = false;
     });
 
     // 收集各维度分数
     const dimensions = {};
     let totalScore = 0;
+    let cultureSubtotal = 0;
+    let item13Score = 0;  // 1.3 温泉水供应稳定性
+    let item33Score = 0;  // 3.3 私汤泡池卫生
     SCORE_DIMENSIONS.forEach(dim => {
         const scores = getDimensionScores(dim.id);
         const subtotal = scores.reduce((sum, s) => sum + s, 0);
+        const clampedSubtotal = Math.min(subtotal, dim.maxScore);
         dimensions[dim.id] = {
             name: dim.name,
             maxScore: dim.maxScore,
-            items: dim.items.map((item, i) => ({ name: item, score: scores[i] })),
-            subtotal: Math.min(subtotal, dim.maxScore)
+            items: dim.items.map((item, i) => ({ name: item.name || item, score: scores[i], maxScore: item.maxScore || dim.maxScore })),
+            subtotal: clampedSubtotal
         };
-        totalScore += Math.min(subtotal, dim.maxScore);
+        totalScore += clampedSubtotal;
+        // 捕获金宿门槛关键得分
+        if (dim.id === 'culture') cultureSubtotal = clampedSubtotal;
+        if (dim.id === 'infra' && dim.items[2]) item13Score = scores[2] || 0;
+        if (dim.id === 'hygiene' && dim.items[2]) item33Score = scores[2] || 0;
     });
 
-    const gradeInfo = getGradeInfo(totalScore);
+    const roundedTotal = Math.round(totalScore * 10) / 10;
+    const gradeInfo = getGradeInfo(roundedTotal, mustAllPassed, cultureSubtotal, item13Score, item33Score);
 
     return {
         name: target,
         mustChecks,
+        mustAllPassed,
         dimensions,
-        totalScore: Math.round(totalScore * 10) / 10,
+        totalScore: roundedTotal,
         grade: gradeInfo.grade,
-        updatedAt: new Date().toISOString()
+        gradeDetail: gradeInfo,
+        filledBy: getFillerName()
     };
 }
 
@@ -762,10 +867,22 @@ function recalculateAllScores() {
     const roundedTotal = Math.round(grandTotal * 10) / 10;
     document.getElementById('totalScore').textContent = roundedTotal.toFixed(1);
 
-    // 更新评级
-    const gradeInfo = getGradeInfo(roundedTotal);
+    // 获取必备项状态和金宿门槛
+    let mustAllPassed = true;
+    document.querySelectorAll('.must-grid input[type="checkbox"]').forEach(cb => {
+        if (!cb.checked) mustAllPassed = false;
+    });
+    // 获取文化特色、1.3、3.3得分用于金宿判定
+    const cultureScores = getDimensionScores('culture');
+    const cultureSubtotal = Math.min(cultureScores.reduce((s, v) => s + v, 0), 10);
+    const infraScores = getDimensionScores('infra');
+    const item13Score = infraScores[2] || 0;
+    const hygieneScores = getDimensionScores('hygiene');
+    const item33Score = hygieneScores[2] || 0;
+
+    const gradeInfo = getGradeInfo(roundedTotal, mustAllPassed, cultureSubtotal, item13Score, item33Score);
     const gradeEl = document.getElementById('totalGrade');
-    gradeEl.textContent = gradeInfo.grade;
+    gradeEl.textContent = gradeInfo.grade + (gradeInfo.isVeto ? '（必备项不达标）' : '');
     gradeEl.className = 'total-grade ' + gradeInfo.cssClass;
 
     // 更新预览
@@ -787,7 +904,11 @@ function updateScorePreview() {
     const mustChecked = Object.values(data.mustChecks).filter(Boolean).length;
     const mustTotal = MUST_ITEMS.length;
 
+    const vetoWarn = !data.mustAllPassed
+        ? '<div style="color:var(--color-danger);font-weight:700;margin-bottom:6px;">⚠ 必备项不达标 → 不定级</div>'
+        : '';
     previewEl.innerHTML = `
+        ${vetoWarn}
         <div style="font-weight:700;margin-bottom:8px;">📝 当前评分预览：${data.name}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:0.82rem;">
             ${SCORE_DIMENSIONS.map(dim => {
@@ -796,7 +917,7 @@ function updateScorePreview() {
                 return `<span>${dim.name}</span><span style="color:var(--color-primary);font-weight:600;">${d.subtotal.toFixed(1)}/${dim.maxScore} (${pct}%)</span>`;
             }).join('')}
             <span style="font-weight:700;">总分</span><span style="font-weight:800;color:var(--color-primary);">${data.totalScore.toFixed(1)}/100</span>
-            <span>必备项核查</span><span>${mustChecked}/${mustTotal} 项通过</span>
+            <span>必备项核查</span><span style="color:${mustChecked === mustTotal ? 'var(--color-success)' : 'var(--color-danger)'};font-weight:700;">${mustChecked}/${mustTotal} ${mustChecked === mustTotal ? '✅ 全部达标' : '⚠ 有未达标项'}</span>
         </div>
     `;
 }
@@ -813,16 +934,12 @@ function validateScoringForm() {
         errors.push('请先选择要评分的民宿');
     }
 
-    // 检查是否已有该民宿的评分记录
-    if (target) {
-        const existing = scoreData.find(s => s.name === target);
-        if (existing) {
-            // 允许覆盖，但提示
-            // errors.push(`「${target}」已有评分记录，将覆盖旧数据`);
-        }
-    }
+    // 同一民宿允许多次评分，无需检查重复
 
     const data = getScoringFormData();
+    if (!data.mustAllPassed) {
+        errors.push('⚠ 必备项不达标，无法参与评级，直接判定为"不定级"。是否继续保存？');
+    }
     if (data.totalScore <= 0 && !Object.values(data.mustChecks).some(Boolean)) {
         errors.push('请至少填写评分或勾选必备项');
     }
@@ -843,16 +960,8 @@ function saveScoringData() {
 
     const data = getScoringFormData();
 
-    // 检查是否已存在该民宿评分记录
-    const existingIndex = scoreData.findIndex(s => s.name === data.name);
-    if (existingIndex >= 0) {
-        if (!confirm(`「${data.name}」已有评分记录（${scoreData[existingIndex].totalScore}分/${scoreData[existingIndex].grade}），是否覆盖？`)) {
-            return;
-        }
-        scoreData[existingIndex] = data;
-    } else {
-        scoreData.push(data);
-    }
+    // 追加新评分记录（同一民宿允许多次评分，不做覆盖）
+    scoreData.push(data);
 
     // 本地存储
     saveData(STORAGE_KEY_SCORE, scoreData);
@@ -860,7 +969,7 @@ function saveScoringData() {
     // 云端同步写入（异步，不阻塞本地操作）
     cloudUpsertScore(data);
 
-    showToast(`✅ 已保存「${data.name}」的评分（${data.totalScore}分/${data.grade}）`, 'success');
+    showToast(`✅ 已新增「${data.name}」的评分（${data.totalScore}分/${data.grade}）`, 'success');
     clearScoringForm();
     refreshAll();
 }
@@ -890,14 +999,15 @@ function refreshScoreTargetSelect() {
     const select = document.getElementById('scoreTarget');
     const currentVal = select.value; // 保留当前选择
 
-    // 获取已有评分记录的民宿名称
-    const scoredNames = new Set(scoreData.map(s => s.name));
+    // 统计每个民宿的评分次数
+    const scoreCount = {};
+    scoreData.forEach(s => { scoreCount[s.name] = (scoreCount[s.name] || 0) + 1; });
 
     select.innerHTML = '<option value="">-- 请先选择民宿 --</option>'
-        + basicData.map((item, i) => {
-            const scored = scoredNames.has(item.name);
+        + basicData.map((item) => {
+            const cnt = scoreCount[item.name] || 0;
             return `<option value="${item.name}">
-                ${item.name}${scored ? ' (已有评分)' : ''}
+                ${item.name}${cnt > 0 ? ' (' + cnt + '次评分)' : ''}
             </option>`;
         }).join('');
 
@@ -916,8 +1026,9 @@ function onScoreTargetChange() {
 
     if (!target) return;
 
-    // 查找已有评分记录并回填
-    const existing = scoreData.find(s => s.name === target);
+    // 查找该民宿所有评分记录，取最新一条回填
+    const allScores = scoreData.filter(s => s.name === target);
+    const existing = allScores.length > 0 ? allScores[allScores.length - 1] : null;
     if (existing) {
         // 回填必备项
         for (const [key, checked] of Object.entries(existing.mustChecks || {})) {
@@ -971,13 +1082,18 @@ function refreshDataList() {
     }
 
     tbody.innerHTML = filtered.map((item, displayIndex) => {
-        // 查找该民宿的评分
-        const scoreEntry = scoreData.find(s => s.name === item.name);
-        const scoreDisplay = scoreEntry
-            ? `${scoreEntry.totalScore}分`
+        // 统计该民宿所有评分记录，计算平均分
+        const allScores = scoreData.filter(s => s.name === item.name);
+        const scoreCount = allScores.length;
+        const avgScore = scoreCount > 0
+            ? Math.round(allScores.reduce((s, r) => s + r.totalScore, 0) / scoreCount * 10) / 10
+            : null;
+        const latestGrade = scoreCount > 0 ? allScores[allScores.length - 1].grade : null;
+        const scoreDisplay = avgScore !== null
+            ? `<span title="${scoreCount}次评分 | 平均${avgScore}分">${avgScore}分 <small>(${scoreCount}次)</small></span>`
             : '<span style="color:var(--color-text-muted);">未评分</span>';
-        const gradeDisplay = scoreEntry
-            ? `<span class="grade-badge ${getGradeInfo(scoreEntry.totalScore).cssClass}">${scoreEntry.grade}</span>`
+        const gradeDisplay = latestGrade
+            ? `<span class="grade-badge ${getGradeInfo(avgScore).cssClass}">${latestGrade}</span>`
             : '<span style="color:var(--color-text-muted);">--</span>';
 
         return `
@@ -1183,7 +1299,7 @@ function exportScoreExcel() {
     // 第2行：一级表头（维度名）
     const headerRow1 = ['民宿名称'];
     // 必备项（合并为一格）
-    headerRow1.push('必备项（不计入总分）', ...Array(MUST_ITEMS.length - 1).fill(''));
+    headerRow1.push('必备项（一票否决）', ...Array(MUST_ITEMS.length - 1).fill(''));
     // 各评分维度
     SCORE_DIMENSIONS.forEach(dim => {
         headerRow1.push(dim.name, ...Array(dim.items.length - 1).fill(''));
@@ -1193,7 +1309,7 @@ function exportScoreExcel() {
 
     // 第3行：二级表头（子项名）
     const headerRow2 = [''];
-    MUST_ITEMS.forEach(item => headerRow2.push(item));
+    MUST_ITEMS.forEach(item => headerRow2.push(item.id));
     SCORE_DIMENSIONS.forEach(dim => {
         dim.items.forEach(item => headerRow2.push(item));
     });
@@ -1206,7 +1322,7 @@ function exportScoreExcel() {
 
         // 必备项：勾选为"✓"，未勾选为"✗"
         MUST_ITEMS.forEach(mustItem => {
-            row.push(entry.mustChecks && entry.mustChecks[mustItem] ? '✓' : '');
+            row.push(entry.mustChecks && entry.mustChecks[mustItem.id] ? '✓' : '✗');
         });
 
         // 各维度子项分数
@@ -1319,14 +1435,14 @@ function exportAllExcel() {
         rows2.push(hRow1);
 
         const hRow2 = [''];
-        MUST_ITEMS.forEach(item => hRow2.push(item));
+        MUST_ITEMS.forEach(item => hRow2.push(item.id));
         SCORE_DIMENSIONS.forEach(dim => { dim.items.forEach(item => hRow2.push(item)); });
         hRow2.push('', '');
         rows2.push(hRow2);
 
         scoreData.forEach(entry => {
             const row = [entry.name];
-            MUST_ITEMS.forEach(m => row.push(entry.mustChecks && entry.mustChecks[m] ? '✓' : ''));
+            MUST_ITEMS.forEach(m => row.push(entry.mustChecks && entry.mustChecks[m.id] ? '✓' : '✗'));
             SCORE_DIMENSIONS.forEach(dim => {
                 const dimData = entry.dimensions && entry.dimensions[dim.id];
                 dim.items.forEach((_, i) => {
@@ -1457,8 +1573,8 @@ function renderChartGradePie() {
     if (!dom) return;
 
     // 统计各等级数量
-    const grades = ['优秀', '良好', '合格', '待改进', '不合格'];
-    const gradeColors = ['#16a34a', '#2563eb', '#d97706', '#f97316', '#dc2626'];
+    const grades = ['永汉金宿', '永汉银宿', '永汉铜宿', '不定级'];
+    const gradeColors = ['#f59e0b', '#94a3b8', '#b45309', '#dc2626'];
     const counts = grades.map(g => scoreData.filter(s => s.grade === g).length);
 
     // 只统计有评分的
@@ -1705,7 +1821,8 @@ function refreshPreviewStats() {
         latestEl.innerHTML = '<p class="muted-text">暂无录入数据，填写左侧表单开始...</p>';
     } else {
         const latest = basicData[basicData.length - 1];
-        const scoreEntry = scoreData.find(s => s.name === latest.name);
+        const homestayScores = scoreData.filter(s => s.name === latest.name);
+        const scoreEntry = homestayScores.length > 0 ? homestayScores[homestayScores.length - 1] : null;
         latestEl.innerHTML = `
             <div style="font-weight:700;margin-bottom:6px;">📌 最新录入</div>
             <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:0.82rem;">
@@ -1782,9 +1899,15 @@ window.addEventListener('resize', () => {
    ============================================================ */
 
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log('🏡 民宿信息收集+评分填报系统 初始化中...');
+    console.log('🏡 永汉镇温泉民宿星级评定系统 初始化中...');
 
-    // ---------- 0. 初始化Supabase并加载云端数据 ----------
+    // ---------- 0. 首次访问弹出使用说明（sessionStorage控制，仅本次会话一次）----------
+    if (!sessionStorage.getItem('yonghan_guide_shown')) {
+        showGuideModal();
+        sessionStorage.setItem('yonghan_guide_shown', '1');
+    }
+
+    // ---------- 1. 初始化Supabase并加载云端数据 ----------
     initSupabase();
 
     // ---------- 1. 渲染评分表单子项 ----------
@@ -1920,8 +2043,9 @@ document.addEventListener('DOMContentLoaded', async () => {
      */
     window.getHomestayData = function() {
         const merged = basicData.map(basic => {
-            const score = scoreData.find(s => s.name === basic.name) || null;
-            return { ...basic, score };
+            const scores = scoreData.filter(s => s.name === basic.name);
+            const avgScore = scores.length > 0 ? Math.round(scores.reduce((s, r) => s + r.totalScore, 0) / scores.length * 10) / 10 : null;
+            return { ...basic, scores, scoreCount: scores.length, avgScore };
         });
         return { basic: basicData, score: scoreData, merged };
     };
@@ -1940,9 +2064,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 saveData(STORAGE_KEY_BASIC, basicData);
             }
             if (importData.score && Array.isArray(importData.score)) {
-                const existingScoreNames = new Set(scoreData.map(s => s.name));
-                const newScores = importData.score.filter(s => !existingScoreNames.has(s.name));
-                scoreData = [...scoreData, ...newScores];
+                // 允许同一民宿多条评分，直接全部追加
+                scoreData = [...scoreData, ...importData.score];
                 saveData(STORAGE_KEY_SCORE, scoreData);
             }
             refreshAll();
@@ -1967,6 +2090,74 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, null, 2);
     };
 
+/**
+ * [需求2] 首次打开页面弹出使用说明模态弹窗
+ * sessionStorage 控制：仅本次浏览器会话首次打开弹出
+ */
+function showGuideModal() {
+    // 移除旧弹窗（如果有）
+    const old = document.getElementById('guideModal');
+    if (old) old.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'guideModal';
+    modal.className = 'guide-modal-overlay';
+    modal.innerHTML = `
+        <div class="guide-modal-card">
+            <h2 class="guide-modal-title">🏡 永汉镇温泉民宿星级评定系统</h2>
+            <div class="guide-modal-body">
+                <div class="guide-section">
+                    <span class="guide-num">①</span>
+                    <span>本系统用于<strong>永汉镇温泉民宿星级评定</strong>，数据自动同步Supabase云端，<strong>多人填报互通</strong>。</span>
+                </div>
+                <div class="guide-section">
+                    <span class="guide-num">②</span>
+                    <span>先填写<strong>民宿基础信息</strong>，再完成<strong>18项必备项勾选</strong>（任意一项不达标直接"不定级"）。</span>
+                </div>
+                <div class="guide-section">
+                    <span class="guide-num">③</span>
+                    <span>各评分小项<strong>有分值上限</strong>（如1.3温泉供应上限5分），填写超出会自动修正。</span>
+                </div>
+                <div class="guide-section">
+                    <span class="guide-num">④</span>
+                    <span>同民宿可<strong>多人多次评分</strong>，数据永久保存在云端，系统自动计算平均分。</span>
+                </div>
+                <div class="guide-section">
+                    <span class="guide-num">⑤</span>
+                    <span>填写中途可<strong>保存草稿</strong>，支持一键<strong>导出Excel</strong>完整台账。</span>
+                </div>
+                <div class="guide-section">
+                    <span class="guide-num">⑥</span>
+                    <span>链接访问不稳定建议<strong>切换浏览器</strong>、<strong>Ctrl+F5</strong>强制刷新。</span>
+                </div>
+            </div>
+            <div class="guide-modal-footer">
+                <button class="btn btn-primary guide-confirm-btn" id="btnGuideConfirm">
+                    ✅ 我已知晓，开始评定
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+
+    // 关闭事件
+    const closeModal = () => {
+        modal.classList.add('guide-modal-closing');
+        setTimeout(() => modal.remove(), 300);
+    };
+
+    document.getElementById('btnGuideConfirm').addEventListener('click', closeModal);
+    // 点击遮罩也可关闭
+    modal.addEventListener('click', function(e) {
+        if (e.target === modal) closeModal();
+    });
+    // ESC 关闭
+    document.addEventListener('keydown', function escHandler(e) {
+        if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', escHandler); }
+    });
+}
+
+console.log('🔌 外部接口已就绪：');
     console.log('🔌 外部接口已就绪：');
     console.log('   window.getHomestayData()      - 获取全部数据');
     console.log('   window.importHomestayData({}) - 批量导入数据');
