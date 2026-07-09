@@ -1,6 +1,7 @@
 /*
 =============================
-★★★ Supabase 配置区 ★★★
+★★★ Supabase 云端同步配置区 ★★★
+本区域负责：初始化客户端 → 拉取云端全量数据 → 云端增/改/删
 =============================
 */
 const SUPABASE_URL = 'https://ofeiflviqyhidvgjookl.supabase.co';
@@ -8,20 +9,163 @@ const SUPABASE_ANON_KEY = 'sb_publishable_2B9ExLqgbOtGXxuNd2LSXg_B5DFlpFg';
 let supabaseClient = null;
 let isSupabaseReady = false;
 
-async function initSupabase() {
-  // 全局supabase对象来自html引入的CDN
-  supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  isSupabaseReady = true;
+/**
+ * 初始化Supabase客户端（依赖index.html引入的supabase-js CDN）
+ */
+function initSupabase() {
+    try {
+        if (typeof supabase === 'undefined') {
+            console.error('[Supabase] supabase-js SDK未加载，请检查CDN引入');
+            return;
+        }
+        supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        isSupabaseReady = true;
+        console.log('[Supabase] 客户端初始化成功');
+    } catch (e) {
+        console.error('[Supabase] 初始化失败:', e.message);
+        showToast('云端数据库连接失败，请刷新页面重试', 'error');
+    }
 }
 
-// 从云端拉取所有民宿数据
+/* ---------- 驼峰 ↔ 下划线 字段名转换工具 ---------- */
+/**
+ * 基础信息：前端驼峰 → 数据库下划线
+ * avgPrice→avg_price  openingPeriod→opening_period  createdAt→created_at
+ */
+function basicToSnakeCase(record) {
+    return {
+        name: record.name, address: record.address, owner: record.owner,
+        phone: record.phone, rooms: record.rooms,
+        opening_period: record.openingPeriod, feature: record.feature,
+        avg_price: record.avgPrice, parking: record.parking,
+        dining: record.dining, remark: record.remark, created_at: record.createdAt
+    };
+}
+/** 基础信息：数据库下划线 → 前端驼峰 */
+function basicFromSnakeCase(record) {
+    return {
+        name: record.name, address: record.address, owner: record.owner,
+        phone: record.phone, rooms: record.rooms,
+        openingPeriod: record.opening_period, feature: record.feature,
+        avgPrice: record.avg_price, parking: record.parking,
+        dining: record.dining, remark: record.remark, createdAt: record.created_at
+    };
+}
+/** 评分：前端驼峰 → 数据库下划线 */
+function scoreToSnakeCase(record) {
+    return {
+        name: record.name, must_checks: record.mustChecks,
+        dimensions: record.dimensions, total_score: record.totalScore,
+        grade: record.grade, updated_at: record.updatedAt
+    };
+}
+/** 评分：数据库下划线 → 前端驼峰 */
+function scoreFromSnakeCase(record) {
+    return {
+        name: record.name, mustChecks: record.must_checks,
+        dimensions: record.dimensions, totalScore: record.total_score,
+        grade: record.grade, updatedAt: record.updated_at
+    };
+}
+
+/**
+ * [云端读取] 从Supabase全量拉取两张表数据，写入localStorage并更新内存
+ * 页面初始化时自动调用，实现多用户数据互通
+ */
 async function loadCloudAllData() {
-  if (!supabaseClient) await initSupabase();
-  const { data: basicList } = await supabaseClient.from('homestay_basic').select('*');
-  const { data: scoreList } = await supabaseClient.from('homestay_score').select('*');
-  localStorage.setItem('homestay_basic_data', JSON.stringify(basicList));
-  localStorage.setItem('homestay_score_data', JSON.stringify(scoreList));
-  renderAllChart();
+    try {
+        if (!supabaseClient) initSupabase();
+        if (!isSupabaseReady) {
+            console.warn('[云端加载] Supabase未就绪，使用本地缓存数据');
+            return;
+        }
+
+        console.log('[云端加载] 正在拉取云端全量数据...');
+        const { data: basicList, error: err1 } = await supabaseClient
+            .from('homestay_basic').select('*');
+        if (err1) throw err1;
+
+        const { data: scoreList, error: err2 } = await supabaseClient
+            .from('homestay_score').select('*');
+        if (err2) throw err2;
+
+        // 云端数据写入localStorage（覆盖本地缓存）
+        // 云端下划线字段 → 前端驼峰格式
+        const camelBasic = (basicList || []).map(basicFromSnakeCase);
+        const camelScore = (scoreList || []).map(scoreFromSnakeCase);
+        localStorage.setItem(STORAGE_KEY_BASIC, JSON.stringify(camelBasic));
+        localStorage.setItem(STORAGE_KEY_SCORE, JSON.stringify(camelScore));
+
+        // 更新内存中的全局数据
+        basicData = camelBasic;
+        scoreData = camelScore;
+
+        console.log(`[云端加载] 成功！基础信息${basicData.length}条，评分${scoreData.length}条`);
+        showToast(`☁️ 已同步云端数据（${basicData.length}家民宿）`, 'info', 2000);
+    } catch (e) {
+        console.error('[云端加载] 失败，回退使用本地缓存:', e.message);
+        showToast('⚠ 云端数据加载失败，使用本地缓存数据', 'warning', 3000);
+        // 失败时从localStorage恢复数据
+        basicData = loadData(STORAGE_KEY_BASIC);
+        scoreData = loadData(STORAGE_KEY_SCORE);
+    }
+}
+
+/**
+ * [云端写入] 向homestay_basic表upsert一条民宿基础信息（name字段作为冲突键）
+ * @param {Object} record - 单条民宿基础信息数据
+ */
+async function cloudUpsertBasic(record) {
+    if (!isSupabaseReady) return false;
+    try {
+        const dbRecord = basicToSnakeCase(record);
+        const { error } = await supabaseClient
+            .from('homestay_basic')
+            .upsert(dbRecord, { onConflict: 'name' });
+        if (error) throw error;
+        console.log('[云端写入] homestay_basic upsert成功:', record.name);
+        return true;
+    } catch (e) {
+        console.error('[云端写入] homestay_basic失败:', e.message);
+        showToast('⚠ 云端保存失败，数据仅保存在本地', 'warning', 3000);
+        return false;
+    }
+}
+
+/**
+ * [云端写入] 向homestay_score表upsert一条评分数据（name字段作为冲突键）
+ * @param {Object} record - 单条评分数据
+ */
+async function cloudUpsertScore(record) {
+    if (!isSupabaseReady) return false;
+    try {
+        const dbRecord = scoreToSnakeCase(record);
+        const { error } = await supabaseClient
+            .from('homestay_score')
+            .upsert(dbRecord, { onConflict: 'name' });
+        if (error) throw error;
+        console.log('[云端写入] homestay_score upsert成功:', record.name);
+        return true;
+    } catch (e) {
+        console.error('[云端写入] homestay_score失败:', e.message);
+        showToast('⚠ 云端评分保存失败，数据仅保存在本地', 'warning', 3000);
+        return false;
+    }
+}
+
+/**
+ * [云端删除] 从两张表中删除指定民宿的所有数据
+ * @param {string} name - 民宿名称
+ */
+async function cloudDeleteRecord(name) {
+    if (!isSupabaseReady) return;
+    try {
+        await supabaseClient.from('homestay_basic').delete().eq('name', name);
+        await supabaseClient.from('homestay_score').delete().eq('name', name);
+        console.log('[云端删除] 已删除:', name);
+    } catch (e) {
+        console.error('[云端删除] 失败:', e.message);
+    }
 }
 /* ============================================================
    民宿信息收集+评分填报系统 - 主逻辑脚本
@@ -31,7 +175,7 @@ async function loadCloudAllData() {
      3. localStorage 本地持久化存储
      4. 一键导出 Excel（完全匹配原始台账格式）
      5. ECharts 实时可视化（柱状图/饼图/雷达图/条形图）
-     6. 预留 WorkBuddy / 金山文档 数据同步接口
+     6. Supabase 云端多人数据同步
 
    数据存储 key：
      - homestay_basic_data    → 基础信息数组 [{...}, ...]
@@ -434,7 +578,12 @@ function saveBasicInfo() {
         showToast(`✅ 已添加「${data.name}」`, 'success');
     }
 
+    // 本地存储
     saveData(STORAGE_KEY_BASIC, basicData);
+
+    // 云端同步写入（异步，不阻塞本地操作）
+    cloudUpsertBasic(data);
+
     clearBasicForm();
     refreshAll(); // 刷新列表、预览、图表、评分下拉
 }
@@ -705,7 +854,12 @@ function saveScoringData() {
         scoreData.push(data);
     }
 
+    // 本地存储
     saveData(STORAGE_KEY_SCORE, scoreData);
+
+    // 云端同步写入（异步，不阻塞本地操作）
+    cloudUpsertScore(data);
+
     showToast(`✅ 已保存「${data.name}」的评分（${data.totalScore}分/${data.grade}）`, 'success');
     clearScoringForm();
     refreshAll();
@@ -898,8 +1052,13 @@ function deleteRecord(index) {
     // 同时删除关联的评分数据
     scoreData = scoreData.filter(s => s.name !== name);
 
+    // 本地存储
     saveData(STORAGE_KEY_BASIC, basicData);
     saveData(STORAGE_KEY_SCORE, scoreData);
+
+    // 云端同步删除（异步，不阻塞本地操作）
+    cloudDeleteRecord(name);
+
     showToast(`已删除「${name}」及其评分数据`, 'warning');
     refreshAll();
 }
@@ -1622,13 +1781,19 @@ window.addEventListener('resize', () => {
    十三、初始化（DOMContentLoaded）
    ============================================================ */
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     console.log('🏡 民宿信息收集+评分填报系统 初始化中...');
 
-    // ---------- 0. 渲染评分表单子项 ----------
+    // ---------- 0. 初始化Supabase并加载云端数据 ----------
+    initSupabase();
+
+    // ---------- 1. 渲染评分表单子项 ----------
     renderScoringForm();
 
-    // ---------- 1. 标签切换 ----------
+    // ---------- 2. 从云端拉取全量数据（覆盖本地缓存，实现多人数据互通）----------
+    await loadCloudAllData();
+
+    // ---------- 3. 标签切换 ----------
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const targetTab = this.dataset.tab;
@@ -1663,7 +1828,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // ---------- 2. 基础信息表单事件 ----------
+    // ---------- 4. 基础信息表单事件 ----------
     const nameInput = document.getElementById('name');
     nameInput.addEventListener('input', checkNameUnique);
     nameInput.addEventListener('blur', checkNameUnique);
@@ -1700,7 +1865,7 @@ document.addEventListener('DOMContentLoaded', () => {
         showToast('表单已清空', 'info');
     });
 
-    // ---------- 3. 评分表单事件 ----------
+    // ---------- 5. 评分表单事件 ----------
     document.getElementById('btnSaveScore').addEventListener('click', saveScoringData);
     document.getElementById('btnClearScore').addEventListener('click', () => {
         clearScoringForm();
@@ -1708,7 +1873,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     document.getElementById('scoreTarget').addEventListener('change', onScoreTargetChange);
 
-    // ---------- 4. 导出按钮 ----------
+    // ---------- 6. 导出按钮 ----------
     document.getElementById('btnExport').addEventListener('click', () => {
         // 弹出导出选项
         const choice = confirm(
@@ -1727,16 +1892,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ---------- 5. 重置按钮 ----------
+    // ---------- 7. 重置按钮 ----------
     document.getElementById('btnReset').addEventListener('click', resetAllData);
 
-    // ---------- 6. 列表搜索 ----------
+    // ---------- 8. 列表搜索 ----------
     const listSearch = document.getElementById('listSearch');
     if (listSearch) {
         listSearch.addEventListener('input', refreshDataList);
     }
 
-    // ---------- 7. 初始刷新 ----------
+    // ---------- 9. 初始刷新（使用云端数据渲染全部组件）----------
     refreshAll();
 
     console.log('✅ 系统初始化完成！');
@@ -1745,17 +1910,15 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('💡 提示：数据自动保存在浏览器本地存储中，刷新页面不丢失。');
 
     /* ============================================================
-       十四、预留接口（供WorkBuddy/金山文档等外部系统调用）
-       以下接口挂载到 window 全局，方便外部脚本或自动化流程调用
+       十四、外部调用接口（供WorkBuddy等自动化工具使用）
+       以下接口挂载到 window 全局
        ============================================================ */
 
     /**
-     * [预留接口] 获取所有民宿数据（基础+评分）
-     * WorkBuddy 可通过此接口读取数据进行自动化分析
+     * [接口] 获取所有民宿数据（基础+评分合并）
      * @returns {{ basic: Array, score: Array, merged: Array }}
      */
     window.getHomestayData = function() {
-        // 合并基础信息与评分数据
         const merged = basicData.map(basic => {
             const score = scoreData.find(s => s.name === basic.name) || null;
             return { ...basic, score };
@@ -1764,15 +1927,13 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     /**
-     * [预留接口] 批量导入民宿数据（JSON格式）
-     * 可用于从外部系统（如WorkBuddy导出结果）批量导入
-     * @param {{ basic?: Array, score?: Array }} importData - 导入数据
+     * [接口] 批量导入民宿数据（JSON格式），自动去重
+     * @param {{ basic?: Array, score?: Array }} importData
      * @returns {{ success: boolean, message: string }}
      */
     window.importHomestayData = function(importData) {
         try {
             if (importData.basic && Array.isArray(importData.basic)) {
-                // 去重处理
                 const existingNames = new Set(basicData.map(b => b.name));
                 const newItems = importData.basic.filter(b => !existingNames.has(b.name));
                 basicData = [...basicData, ...newItems];
@@ -1792,41 +1953,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     /**
-     * [预留接口] 同步数据到金山文档在线表格
-     * 当前为预留接口，后续配置API地址和Token后可启用
-     * @param {string} apiUrl - 金山文档API地址
-     * @param {string} token - 认证Token
-     * @returns {Promise<{success: boolean, message: string}>}
-     */
-    window.syncToJinshanDoc = async function(apiUrl, token) {
-        try {
-            const payload = {
-                basic: basicData,
-                score: scoreData,
-                exportTime: new Date().toISOString()
-            };
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify(payload)
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const result = await response.json();
-            showToast('✅ 数据已同步到金山文档', 'success');
-            return { success: true, message: '同步成功', data: result };
-        } catch (e) {
-            console.error('[金山文档同步失败]', e);
-            showToast('❌ 同步失败：' + e.message, 'error');
-            return { success: false, message: e.message };
-        }
-    };
-
-    /**
-     * [预留接口] 导出JSON数据（供WorkBuddy直接读取）
-     * 返回完整的数据结构，方便自动化流程处理
+     * [接口] 导出完整数据为JSON字符串（供WorkBuddy读取）
      * @returns {string} JSON字符串
      */
     window.exportToJSON = function() {
@@ -1840,13 +1967,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }, null, 2);
     };
 
-    console.log('🔌 预留接口已就绪：');
-    console.log('   window.getHomestayData()        - 获取全部数据');
-    console.log('   window.importHomestayData({})   - 批量导入数据');
-    console.log('   window.syncToJinshanDoc(url,tk) - 同步到金山文档');
-    console.log('   window.exportToJSON()           - 导出JSON');
-});
-// 页面打开自动同步云端数据
-window.addEventListener('DOMContentLoaded', async () => {
-  await loadCloudAllData();
+    console.log('🔌 外部接口已就绪：');
+    console.log('   window.getHomestayData()      - 获取全部数据');
+    console.log('   window.importHomestayData({}) - 批量导入数据');
+    console.log('   window.exportToJSON()         - 导出JSON');
 });
